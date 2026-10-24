@@ -81,9 +81,18 @@ export default function EventPage() {
   const membership = useQuery({
     queryKey: [userId, 'membership', id, event.data?.version, event.data?.participantCount],
     queryFn: ({ signal }) => organizerParticipates(event.data!, userId, signal),
-    enabled: !!event.data && !event.error,
+    enabled:
+      !!event.data &&
+      !event.error &&
+      event.data.organizerId === userId &&
+      event.data.participants.length >= 50 &&
+      !event.data.participants.some((person) => person.userId === userId),
   })
-  if (event.error || membership.error)
+  const needsMembershipLookup =
+    event.data?.organizerId === userId &&
+    event.data.participants.length >= 50 &&
+    !event.data.participants.some((person) => person.userId === userId)
+  if (event.error || (needsMembershipLookup && membership.error))
     return (
       <div className="container narrow">
         <PageHeading title="No podemos mostrar este contenido." back="/eventos" />
@@ -91,12 +100,12 @@ export default function EventPage() {
           error={event.error || membership.error}
           retry={() => {
             event.refetch()
-            membership.refetch()
+            if (needsMembershipLookup) membership.refetch()
           }}
         />
       </div>
     )
-  if (!event.data || membership.isPending)
+  if (!event.data || (needsMembershipLookup && membership.isPending))
     return (
       <div className="container">
         <Loading label="Preparando el intercambio…" />
@@ -104,7 +113,10 @@ export default function EventPage() {
     )
   const current = event.data
   const organizer = current.organizerId === userId
-  const participant = membership.data === true
+  const participant =
+    !organizer ||
+    current.participants.some((person) => person.userId === userId) ||
+    (needsMembershipLookup && membership.data === true)
   const base = `/eventos/${id}`
   const tabs = [
     { path: '', label: 'Detalles' },
@@ -112,7 +124,13 @@ export default function EventPage() {
     ...(participant
       ? [
           { path: '/deseos', label: 'Mis deseos' },
-          { path: '/mi-amigo', label: 'Mi amigo' },
+          {
+            path: '/mi-amigo',
+            label:
+              current.status === 'CANCELLED' && current.drawnAt
+                ? 'Mi resultado histórico'
+                : 'Mi amigo',
+          },
         ]
       : []),
     ...(organizer && current.status === 'OPEN' ? [{ path: '/invitar', label: 'Invitar' }] : []),
@@ -133,7 +151,10 @@ export default function EventPage() {
       </div>
       {message && <Notice success>{message}</Notice>}
       {current.status === 'CANCELLED' && (
-        <Notice>Este evento fue cancelado. Ya no admite inscripciones, cambios ni sorteo.</Notice>
+        <Notice>
+          Este evento fue cancelado. Ya no admite inscripciones, cambios ni nuevos sorteos.
+          {current.drawnAt ? ' El resultado original se conserva únicamente como historial.' : ''}
+        </Notice>
       )}
       <nav className="event-nav" aria-label="Secciones del evento">
         {tabs.map((tab) => (
@@ -319,18 +340,20 @@ export function EventDetails() {
                     Sorteo automático programado. Puedes cambiarlo mientras siga abierto.
                   </p>
                 )}
-                <Button
-                  variant="quiet"
-                  onClick={() => {
-                    action.reset()
-                    setConfirm('cancel')
-                  }}
-                >
-                  Cancelar evento
-                </Button>
               </div>
             ) : (
               <p>Los datos del evento y el resultado se conservan.</p>
+            )}
+            {event.status !== 'CANCELLED' && (
+              <Button
+                variant="quiet"
+                onClick={() => {
+                  action.reset()
+                  setConfirm('cancel')
+                }}
+              >
+                Cancelar evento
+              </Button>
             )}
             <p className="caption">Organizar no permite ver las asignaciones ajenas.</p>
           </section>
@@ -379,7 +402,7 @@ export function EventDetails() {
       >
         <p>
           {confirm === 'cancel'
-            ? 'No se podrá sortear ni incorporar a más personas. Se anularán los correos pendientes de este evento.'
+            ? `La cancelación es definitiva: no se podrán incorporar personas, cambiar datos ni volver a sortear. ${event.drawnAt ? 'Las parejas y la fecha del sorteo se conservarán como historial privado. ' : ''}Se anularán los correos pendientes; los que ya se enviaron o están en proceso podrían llegar.`
             : 'Dejarás de participar. Puedes volver con la invitación mientras el evento siga abierto.'}
         </p>
       </ConfirmDialog>
@@ -433,7 +456,7 @@ export function ParticipantsPage() {
             <ul className="participants-list">
               {list.data.map((person) => (
                 <li key={person.userId}>
-                  <Avatar name={person.fullName} />
+                  <Avatar name={person.fullName} url={person.avatarUrl} />
                   <div className="grow">
                     <strong>{person.fullName}</strong>
                     <p>
@@ -788,7 +811,7 @@ export function RevealPage() {
   const assignment = useQuery({
     queryKey: key,
     queryFn: ({ signal }) => api.assignment(event.id, signal),
-    enabled: revealed && participant && event.status === 'DRAWN',
+    enabled: revealed && participant && !!event.drawnAt,
     gcTime: 0,
     staleTime: 0,
     retry: false,
@@ -812,7 +835,7 @@ export function RevealPage() {
   }, [userId, event.id, queryClient])
   if (!participant)
     return <Empty title="Organizaste este intercambio, pero no participaste del sorteo." />
-  if (event.status !== 'DRAWN')
+  if (!event.drawnAt)
     return (
       <Empty
         title={
@@ -834,16 +857,33 @@ export function RevealPage() {
   return (
     <div className="split-layout reveal-layout">
       <section className="panel reveal-card">
+        {event.status === 'CANCELLED' && (
+          <Notice>
+            Intercambio cancelado. Esta asignación se conserva como historial; el evento no se
+            reactivará.
+          </Notice>
+        )}
         <span className="private-label">
           <LockKeyhole size={16} /> SOLO PARA TI · CONFIDENCIAL
         </span>
         {!revealed ? (
           <>
             <EnvelopeArt small />
-            <h2>Tu amigo secreto está listo.</h2>
-            <p>Descubre a quién le regalarás en este intercambio.</p>
+            <h2>
+              {event.status === 'CANCELLED'
+                ? 'Tu resultado original se conserva.'
+                : 'Tu amigo secreto está listo.'}
+            </h2>
+            <p>
+              {event.status === 'CANCELLED'
+                ? 'Puedes consultar tu asignación del sorteo cancelado.'
+                : 'Descubre a quién le regalarás en este intercambio.'}
+            </p>
             <Button onClick={() => setRevealed(true)}>
-              Ver mi amigo secreto <ArrowRight size={18} />
+              {event.status === 'CANCELLED'
+                ? 'Consultar mi resultado histórico'
+                : 'Ver mi amigo secreto'}{' '}
+              <ArrowRight size={18} />
             </Button>
             <p className="caption">
               Solo tú puedes consultar tu asignación. Se ocultará al cambiar de pestaña.
@@ -906,7 +946,11 @@ export function RevealPage() {
       </section>
       <aside className="paper-note">
         <Gift size={27} />
-        <h2>El detalle es lo que cuenta.</h2>
+        <h2>
+          {event.status === 'CANCELLED'
+            ? 'Historial del intercambio.'
+            : 'El detalle es lo que cuenta.'}
+        </h2>
         <dl className="detail-list">
           <div>
             <dt>Regalo aproximado</dt>
@@ -1150,7 +1194,11 @@ export function NotificationsPage() {
         )
       )}
       <div className="retry-panel">
-        <h3>Si algún correo no salió, podemos volver a intentarlo.</h3>
+        <h3>
+          {event.status === 'CANCELLED'
+            ? 'El envío de nuevos avisos está cerrado.'
+            : 'Si algún correo no salió, podemos volver a intentarlo.'}
+        </h3>
         <p>
           Solo se reencolan los fallos definitivos. Esta acción nunca repite el sorteo ni cambia las
           asignaciones.
@@ -1162,7 +1210,7 @@ export function NotificationsPage() {
             retry.mutate()
           }}
           pending={retry.isPending}
-          disabled={!stats.data || !stats.data.FAILED}
+          disabled={event.status === 'CANCELLED' || !stats.data || !stats.data.FAILED}
         >
           {retry.isPending ? 'Programando…' : 'Reintentar correos fallidos'}
         </Button>

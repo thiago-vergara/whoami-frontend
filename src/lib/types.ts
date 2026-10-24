@@ -13,6 +13,7 @@ export interface Profile {
 export interface Participant {
   userId: string
   fullName: string
+  avatarUrl?: string | null
 }
 export interface EventSummary {
   id: string
@@ -66,6 +67,14 @@ export interface InvitationPreview {
   giftBudgetMinor: number | null
   organizerName: string
   status: EventStatus
+}
+export interface InvitationAccess {
+  eventId: string
+  eventStatus: EventStatus
+  membershipStatus: 'NONE' | 'ACTIVE' | 'LEFT' | 'REMOVED'
+  organizer: boolean
+  canView: boolean
+  canJoin: boolean
 }
 export interface Wish {
   id: string

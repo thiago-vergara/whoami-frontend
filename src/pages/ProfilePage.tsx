@@ -71,6 +71,10 @@ function ProfileForm({ profile }: { profile: Profile }) {
       setCropFile(null)
       queryClient.setQueryData(key, updated)
       setMessage('Tu foto se actualizó. Los cambios de nombre y celular se guardan por separado.')
+      queryClient.invalidateQueries({
+        predicate: (q) =>
+          q.queryKey[0] === profile.id && ['event', 'participants'].includes(String(q.queryKey[1])),
+      })
     },
   })
   const deletion = useMutation({

@@ -19,6 +19,7 @@ import {
   userId,
 } from './fixtures'
 import type { EventView, Wish } from '../lib/types'
+import { api } from '../lib/api'
 
 const mocked = vi.hoisted(() => ({ getAuthClient: vi.fn() }))
 vi.mock('../lib/auth', async (importOriginal) => ({
@@ -46,13 +47,14 @@ vi.mock('../components/AvatarCropDialog', () => ({
   ),
 }))
 let currentEvent: EventView
+let invitationMembership: 'NONE' | 'ACTIVE' | 'LEFT' | 'REMOVED'
 let wishes: Wish[]
 let calls: { path: string; method: string; body: unknown; headers: HeadersInit | undefined }[]
 let override: ((path: string, options: RequestInit) => Response | undefined) | undefined
 function backend(path: string, options: RequestInit = {}): Response {
   const method = options.method || 'GET'
   const body =
-    options.body instanceof FormData
+    options.body instanceof FormData || options.body instanceof Blob
       ? options.body
       : options.body
         ? JSON.parse(String(options.body))
@@ -60,28 +62,54 @@ function backend(path: string, options: RequestInit = {}): Response {
   calls.push({ path, method, body, headers: options.headers })
   const overridden = override?.(path, options)
   if (overridden) return overridden
+  if (path.endsWith('/me/avatar/uploads'))
+    return json({
+      id: '44444444-4444-4444-8444-444444444444',
+      uploadUrl: 'https://r2.example.test/whoami/avatar?signature=test',
+      contentType: 'image/jpeg',
+      expiresInSeconds: 300,
+    })
+  if (path.startsWith('https://r2.example.test/')) return new Response(null, { status: 200 })
+  if (path.endsWith('/confirm'))
+    return json({ ...profile, avatarUrl: 'https://example.test/read-avatar' })
   if (path === '/api/v1/me') return json(method === 'PUT' ? { ...profile, ...body } : profile)
   if (path.startsWith('/api/v1/events?')) return json([currentEvent])
   if (path === '/api/v1/events' && method === 'POST') {
     currentEvent = { ...currentEvent, ...body }
     return json(currentEvent, 201)
   }
+  if (path.endsWith('/access') && path.includes('/invitations/'))
+    return json({
+      eventId,
+      eventStatus: currentEvent.status,
+      membershipStatus: invitationMembership,
+      organizer: false,
+      canView: invitationMembership === 'ACTIVE',
+      canJoin: currentEvent.status === 'OPEN' && ['NONE', 'LEFT'].includes(invitationMembership),
+    })
   if (path === `/api/v1/events/${eventId}`) return json(currentEvent)
-  if (path.includes(`/api/v1/invitations/${token}`))
-    return json(
-      method === 'POST'
-        ? currentEvent
-        : {
-            eventId,
-            title: currentEvent.title,
-            description: 'Una invitación para ti.',
-            drawAt: currentEvent.drawAt,
-            exchangeAt: currentEvent.exchangeAt,
-            giftBudgetMinor: 8500,
-            organizerName: 'Lucía Vargas',
-            status: currentEvent.status,
-          },
-    )
+  if (path.includes(`/api/v1/invitations/${token}`)) {
+    if (method === 'POST') {
+      invitationMembership = 'ACTIVE'
+      currentEvent = {
+        ...currentEvent,
+        organizerId: otherId,
+        participants: [{ userId, fullName: profile.fullName }],
+        participantCount: 1,
+      }
+      return json(currentEvent)
+    }
+    return json({
+      eventId,
+      title: currentEvent.title,
+      description: 'Una invitación para ti.',
+      drawAt: currentEvent.drawAt,
+      exchangeAt: currentEvent.exchangeAt,
+      giftBudgetMinor: 8500,
+      organizerName: 'Lucía Vargas',
+      status: currentEvent.status,
+    })
+  }
   if (path.endsWith('/participants/me') && method === 'POST') {
     currentEvent = {
       ...currentEvent,
@@ -157,8 +185,8 @@ function mount(path: string, initial: Session | null = session, strict = false) 
       </AuthProvider>
     </QueryClientProvider>
   )
-  render(strict ? <StrictMode>{app}</StrictMode> : app)
-  return { auth, router, client, user: userEvent.setup() }
+  const view = render(strict ? <StrictMode>{app}</StrictMode> : app)
+  return { auth, router, client, container: view.container, user: userEvent.setup() }
 }
 function participate() {
   currentEvent = {
@@ -169,6 +197,7 @@ function participate() {
 }
 beforeEach(() => {
   currentEvent = structuredClone(event)
+  invitationMembership = 'NONE'
   wishes = []
   calls = []
   override = undefined
@@ -181,6 +210,86 @@ beforeEach(() => {
   window.history.replaceState({}, '', '/')
 })
 describe('Acceso e invitaciones', () => {
+  it('una persona inscrita abre directamente el evento al volver a escanear el QR', async () => {
+    invitationMembership = 'ACTIVE'
+    currentEvent = {
+      ...currentEvent,
+      organizerId: otherId,
+      participants: [{ userId, fullName: profile.fullName }],
+      participantCount: 1,
+    }
+    mount(`/join/${token}`)
+    await screen.findByText('Ya estás inscrito en este intercambio.')
+    expect(screen.queryByRole('button', { name: /Unirme al intercambio/ })).not.toBeInTheDocument()
+    expect(calls.some((c) => c.method === 'POST')).toBe(false)
+    expect(localStorage.getItem('whoami.auth.return')).toBeNull()
+  })
+  it('registro, confirmación y unión terminan en el evento sin una pantalla de carga permanente', async () => {
+    const { user, router } = mount(`/join/${token}`, null)
+    await user.click(await screen.findByRole('link', { name: 'Regístrate' }))
+    await user.type(await screen.findByLabelText(/Nombre completo/), 'Lucía Vargas')
+    await user.type(screen.getByLabelText(/Correo electrónico/), 'lucia@example.test')
+    await user.type(screen.getByLabelText(/^Contraseña/), 'Clave-local-123')
+    await user.click(screen.getByRole('button', { name: /Crear mi cuenta/ }))
+    await screen.findByRole('heading', { name: 'Revisa tu correo.' })
+    window.history.replaceState({}, '', '/auth/callback?code=registration-invitation-code')
+    await act(async () => {
+      await router.navigate('/auth/callback?code=registration-invitation-code')
+    })
+    const join = await screen.findByRole('button', { name: /Unirme al intercambio/ })
+    await waitFor(() => expect(join).toBeEnabled())
+    await user.click(join)
+    await screen.findByText('Te uniste al intercambio. Ya puedes añadir tus deseos.')
+    expect(await screen.findByRole('link', { name: 'Mis deseos' })).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe(`/eventos/${eventId}`)
+    expect(calls.filter((c) => c.path.endsWith('/join') && c.method === 'POST')).toHaveLength(1)
+    expect(screen.queryByText('Preparando el intercambio…')).not.toBeInTheDocument()
+  })
+  it('recupera una unión confirmada por el servidor aunque se pierda la respuesta del POST', async () => {
+    override = (path, options) => {
+      if (path.endsWith('/join') && options.method === 'POST') {
+        invitationMembership = 'ACTIVE'
+        currentEvent = {
+          ...currentEvent,
+          organizerId: otherId,
+          participants: [{ userId, fullName: profile.fullName }],
+          participantCount: 1,
+        }
+        throw new TypeError('Response lost after commit')
+      }
+      return undefined
+    }
+    const { user } = mount(`/join/${token}`)
+    const join = await screen.findByRole('button', { name: /Unirme al intercambio/ })
+    await waitFor(() => expect(join).toBeEnabled())
+    await user.click(join)
+    await screen.findByText('Ya estás inscrito en este intercambio.')
+    expect(await screen.findByRole('link', { name: 'Mis deseos' })).toBeInTheDocument()
+    expect(calls.filter((c) => c.path.endsWith('/join') && c.method === 'POST')).toHaveLength(1)
+  })
+  it('una persona expulsada ve el motivo y no puede volver a unirse con el QR', async () => {
+    invitationMembership = 'REMOVED'
+    mount(`/join/${token}`)
+    await screen.findByText(/Quien organiza retiró tu participación/)
+    expect(screen.queryByRole('button', { name: /Unirme al intercambio/ })).not.toBeInTheDocument()
+  })
+  it('la espera de sesión después del POST tiene un límite y no bloquea para siempre la pantalla', async () => {
+    vi.useFakeTimers()
+    try {
+      const auth = fakeAuth(session)
+      mocked.getAuthClient.mockResolvedValue(auth.client)
+      auth.auth.getSession
+        .mockResolvedValueOnce({ data: { session }, error: null })
+        .mockImplementationOnce(() => new Promise(() => {}))
+      const pending = expect(api.joinInvitation(token)).rejects.toThrow(
+        'No pudimos comprobar tu sesión',
+      )
+      await vi.advanceTimersByTimeAsync(15001)
+      await pending
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('la invitación pública no solicita participantes ni ubicación privada', async () => {
     mount(`/join/${token}`, null)
     expect(await screen.findByRole('heading', { name: 'Amigos de siempre' })).toBeInTheDocument()
@@ -255,6 +364,36 @@ describe('Acceso e invitaciones', () => {
   })
 })
 describe('Organizar y participar', () => {
+  it('muestra la foto de perfil en la lista de participantes', async () => {
+    currentEvent.participants[0].avatarUrl =
+      'https://example.test/participant-photo?signature=temporary'
+    const { container } = mount(`/eventos/${eventId}/participantes`)
+    await screen.findByText(currentEvent.participants[0].fullName)
+    expect(
+      container.querySelector(
+        'img[src="https://example.test/participant-photo?signature=temporary"]',
+      ),
+    ).toBeInTheDocument()
+  })
+  it('el organizador cancela un evento sorteado y el participante conserva su resultado histórico', async () => {
+    participate()
+    currentEvent = { ...currentEvent, status: 'DRAWN', drawnAt: '2030-01-01T12:00:00Z' }
+    const { user } = mount(`/eventos/${eventId}`)
+    await user.click(await screen.findByRole('button', { name: 'Cancelar evento' }))
+    const dialog = screen.getByRole('dialog')
+    expect(
+      within(dialog).getByText(/Las parejas y la fecha del sorteo se conservarán/),
+    ).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Cancelar evento' }))
+    await screen.findByText(/El resultado original se conserva únicamente como historial/)
+    await user.click(screen.getByRole('link', { name: 'Mi resultado histórico' }))
+    await user.click(
+      await screen.findByRole('button', { name: 'Consultar mi resultado histórico' }),
+    )
+    await screen.findByRole('heading', { name: 'Valeria Torres' })
+    expect(calls.filter((c) => c.path.endsWith('/cancel') && c.method === 'POST')).toHaveLength(1)
+    expect(calls.some((c) => c.path.endsWith('/draw'))).toBe(false)
+  })
   it('crear organización no inscribe al organizador; participar es una operación explícita', async () => {
     const { user } = mount(`/eventos/${eventId}`)
     const join = await screen.findByRole('button', { name: /Participar también/ })
@@ -415,7 +554,9 @@ describe('Privacidad, deseos y correos', () => {
   })
   it('un fallo de fotos 503 no impide guardar el perfil básico', async () => {
     override = (path) =>
-      path.endsWith('/me/avatar') ? json({ detail: 'Fotos no configuradas' }, 503) : undefined
+      path.endsWith('/me/avatar/uploads')
+        ? json({ detail: 'Fotos no configuradas' }, 503)
+        : undefined
     const { user } = mount('/perfil')
     const file = new File(['test'], 'avatar.png', { type: 'image/png' })
     await user.upload(await screen.findByLabelText('Seleccionar foto de perfil'), file)
@@ -540,25 +681,73 @@ describe('Recuperación y recursos externos', () => {
     expect(revoke).toHaveBeenCalledWith('blob:qr-isolated-test')
   })
 
-  it('el recorte se envía por multipart al backend sin un PUT de navegador a R2', async () => {
-    override = (path) =>
-      path.endsWith('/me/avatar')
-        ? json({ ...profile, avatarUrl: 'https://example.test/read-avatar' })
-        : undefined
+  it('sube el recorte con URL firmada sin enviar el JWT a R2 y confirma después del PUT', async () => {
     const { user } = mount('/perfil')
     await user.upload(
       await screen.findByLabelText('Seleccionar foto de perfil'),
       new File(['test'], 'avatar.png', { type: 'image/png' }),
     )
-    expect(calls.some((c) => c.path.endsWith('/me/avatar'))).toBe(false)
+    expect(calls.some((c) => c.path.endsWith('/me/avatar/uploads'))).toBe(false)
     await user.click(await screen.findByRole('button', { name: 'Guardar recorte' }))
     await screen.findByText(/Tu foto se actualizó/)
-    const upload = calls.find((c) => c.path.endsWith('/me/avatar'))!
-    expect(upload.method).toBe('POST')
-    expect(upload.body).toBeInstanceOf(FormData)
-    expect((upload.body as FormData).get('file')).toBeInstanceOf(File)
-    expect(upload.headers).toMatchObject({ Authorization: 'Bearer test-access-token' })
-    expect(calls.some((c) => c.path.startsWith('https://'))).toBe(false)
+    const ticket = calls.findIndex((c) => c.path.endsWith('/me/avatar/uploads'))
+    const put = calls.findIndex((c) => c.path.startsWith('https://r2.example.test/'))
+    const confirm = calls.findIndex((c) => c.path.endsWith('/confirm'))
+    expect(calls[ticket].headers).toMatchObject({ Authorization: 'Bearer test-access-token' })
+    expect(calls[ticket].body).toEqual({ contentType: 'image/jpeg', sizeBytes: 7 })
+    expect(calls[put].method).toBe('PUT')
+    expect(calls[put].body).toBeInstanceOf(File)
+    expect(calls[put].headers).toEqual({ 'Content-Type': 'image/jpeg' })
+    expect(ticket).toBeLessThan(put)
+    expect(put).toBeLessThan(confirm)
+    expect(calls[confirm].headers).toMatchObject({ Authorization: 'Bearer test-access-token' })
+    expect(calls.some((c) => c.path.endsWith('/me/avatar'))).toBe(false)
+  })
+  it('no confirma ni cambia la foto si R2 rechaza la subida', async () => {
+    override = (path) =>
+      path.startsWith('https://r2.example.test/') ? new Response(null, { status: 403 }) : undefined
+    const { user } = mount('/perfil')
+    await user.upload(
+      await screen.findByLabelText('Seleccionar foto de perfil'),
+      new File(['test'], 'avatar.png', { type: 'image/png' }),
+    )
+    await user.click(await screen.findByRole('button', { name: 'Guardar recorte' }))
+    await screen.findByText(/La autorización para subir la foto no es válida/)
+    expect(calls.some((c) => c.path.endsWith('/confirm'))).toBe(false)
+    expect(screen.queryByText(/Tu foto se actualizó/)).not.toBeInTheDocument()
+  })
+  it('un fallo CORS o de red no confirma el avatar ni repite la subida', async () => {
+    override = (path) => {
+      if (path.startsWith('https://r2.example.test/')) throw new TypeError('Failed to fetch')
+      return undefined
+    }
+    const { user } = mount('/perfil')
+    await user.upload(
+      await screen.findByLabelText('Seleccionar foto de perfil'),
+      new File(['test'], 'avatar.png', { type: 'image/png' }),
+    )
+    await user.click(await screen.findByRole('button', { name: 'Guardar recorte' }))
+    await screen.findByText(/No pudimos subir la foto/)
+    expect(calls.filter((c) => c.path.startsWith('https://r2.example.test/'))).toHaveLength(1)
+    expect(calls.some((c) => c.path.endsWith('/confirm'))).toBe(false)
+  })
+  it('no confirma la foto si cambia la cuenta mientras se sube a R2', async () => {
+    const { user, auth } = mount('/perfil')
+    override = (path) => {
+      if (path.startsWith('https://r2.example.test/'))
+        auth.auth.getSession.mockResolvedValue({
+          data: { session: { ...session, user: { ...session.user, id: otherId } } },
+          error: null,
+        })
+      return undefined
+    }
+    await user.upload(
+      await screen.findByLabelText('Seleccionar foto de perfil'),
+      new File(['test'], 'avatar.png', { type: 'image/png' }),
+    )
+    await user.click(await screen.findByRole('button', { name: 'Guardar recorte' }))
+    await screen.findByText(/Tu sesión cambió/)
+    expect(calls.some((c) => c.path.endsWith('/confirm'))).toBe(false)
   })
   it('eliminar exige confirmación y limpia sesión y caché', async () => {
     override = (path, options) =>

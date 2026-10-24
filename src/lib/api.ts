@@ -6,6 +6,7 @@ import type {
   EventSummary,
   EventView,
   Invitation,
+  InvitationAccess,
   InvitationPreview,
   NotificationStats,
   Participant,
@@ -31,13 +32,30 @@ interface RequestOptions {
   public?: boolean
   blob?: boolean
   closingSession?: boolean
+  timeoutMs?: number
+}
+async function readSession(client: Awaited<ReturnType<typeof getAuthClient>>) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      client.auth.getSession(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new ApiError(0, 'No pudimos comprobar tu sesión. Inténtalo de nuevo.')),
+          15000,
+        )
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const client = options.public ? null : await getAuthClient()
   let token: string | undefined
   let userId: string | undefined
   if (client) {
-    const { data, error } = await client.auth.getSession()
+    const { data, error } = await readSession(client)
     if (error || !data.session)
       throw new ApiError(401, 'Tu sesión terminó. Entra de nuevo para continuar.')
     token = data.session.access_token
@@ -47,8 +65,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     fetch(`${apiOrigin}/api/v1${path}`, {
       method: options.method || 'GET',
       signal: options.signal
-        ? AbortSignal.any([options.signal, AbortSignal.timeout(20000)])
-        : AbortSignal.timeout(20000),
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 20000)])
+        : AbortSignal.timeout(options.timeoutMs ?? 20000),
       cache: 'no-store',
       credentials: 'omit',
       headers: {
@@ -79,6 +97,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   } catch (error) {
     if (error instanceof ApiError) throw error
     if (error instanceof DOMException && error.name === 'AbortError') throw error
+    if (error instanceof DOMException && error.name === 'TimeoutError')
+      throw new ApiError(0, 'La operación tardó demasiado. Inténtalo de nuevo en un momento.')
     throw new ApiError(0, 'No pudimos conectar. Revisa tu conexión e inténtalo de nuevo.')
   }
   if (!response.ok) {
@@ -106,7 +126,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
         ? await response.blob()
         : await response.json()
   if (client) {
-    const { data } = await client.auth.getSession()
+    const { data } = await readSession(client)
     if (data.session?.user.id !== userId && !(options.closingSession && !data.session))
       throw new ApiError(401, 'Tu sesión cambió. Entra de nuevo para continuar.')
   }
@@ -117,10 +137,42 @@ export const api = {
   profile: (signal?: AbortSignal) => request<Profile>('/me', { signal }),
   updateProfile: (body: { fullName: string; phone: string | null }) =>
     request<Profile>('/me', { method: 'PUT', body }),
-  uploadAvatar: (file: File) => {
-    const body = new FormData()
-    body.append('file', file)
-    return request<Profile>('/me/avatar', { method: 'POST', body })
+  uploadAvatar: async (file: File): Promise<Profile> => {
+    const client = await getAuthClient()
+    const initial = await client.auth.getSession()
+    const userId = initial.data.session?.user.id
+    if (!userId) throw new ApiError(401, 'Tu sesión terminó. Entra de nuevo para continuar.')
+    const ticket = await api.uploadTicket(file)
+    const beforeUpload = await client.auth.getSession()
+    if (beforeUpload.data.session?.user.id !== userId)
+      throw new ApiError(401, 'Tu sesión cambió. Entra de nuevo para continuar.')
+    let response: Response
+    try {
+      // The signed URL authorizes this PUT. Never send the Supabase JWT to R2.
+      response = await fetch(ticket.uploadUrl, {
+        method: 'PUT',
+        body: file,
+        headers: { 'Content-Type': ticket.contentType },
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        signal: AbortSignal.timeout(60000),
+      })
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'TimeoutError')
+        throw new ApiError(0, 'La subida tardó demasiado. Inténtalo de nuevo en un momento.')
+      throw new ApiError(0, 'No pudimos subir la foto. Revisa tu conexión e inténtalo de nuevo.')
+    }
+    if (!response.ok)
+      throw new ApiError(
+        response.status,
+        response.status === 403
+          ? 'La autorización para subir la foto no es válida o expiró. Inténtalo de nuevo.'
+          : 'No pudimos guardar la foto. Inténtalo de nuevo en un momento.',
+      )
+    const current = await client.auth.getSession()
+    if (current.data.session?.user.id !== userId)
+      throw new ApiError(401, 'Tu sesión cambió. Entra de nuevo para continuar.')
+    return api.confirmAvatar(ticket.id)
   },
   deleteAccount: (confirmation: string) =>
     request<{ status: string; requestedAt: string }>('/me', {
@@ -132,9 +184,13 @@ export const api = {
     request<UploadTicket>('/me/avatar/uploads', {
       method: 'POST',
       body: { contentType: file.type, sizeBytes: file.size },
+      timeoutMs: 60000,
     }),
   confirmAvatar: (id: string) =>
-    request<Profile>(`/me/avatar/uploads/${encodeURIComponent(id)}/confirm`, { method: 'POST' }),
+    request<Profile>(`/me/avatar/uploads/${encodeURIComponent(id)}/confirm`, {
+      method: 'POST',
+      timeoutMs: 60000,
+    }),
   events: (page = 0, signal?: AbortSignal) =>
     request<EventSummary[]>(`/events?page=${page}&size=20`, { signal }),
   event: (id: string, signal?: AbortSignal) => request<EventView>(eventPath(id), { signal }),
@@ -156,7 +212,12 @@ export const api = {
       signal,
     }),
   joinInvitation: (token: string) =>
-    request<EventView>(`/invitations/${encodeURIComponent(token)}/join`, { method: 'POST' }),
+    request<EventView>(`/invitations/${encodeURIComponent(token)}/join`, {
+      method: 'POST',
+      timeoutMs: 60000,
+    }),
+  invitationAccess: (token: string, signal?: AbortSignal) =>
+    request<InvitationAccess>(`/invitations/${encodeURIComponent(token)}/access`, { signal }),
   joinOrganizer: (id: string) =>
     request<EventView>(`${eventPath(id)}/participants/me`, { method: 'POST' }),
   leave: (id: string) => request<void>(`${eventPath(id)}/participants/me`, { method: 'DELETE' }),

@@ -33,7 +33,7 @@ El 23/10/2026 se comprobó que Supabase tiene **email y Google habilitados**, co
    - `http://localhost:3000/auth/callback?intent=recovery`
 2. En Google, mantener como callback `https://hgmklixxdmgyhlriqsiq.supabase.co/auth/v1/callback`. Si el consentimiento sigue en modo de prueba, añadir las cuentas de prueba que usarás. El Client Secret permanece en Supabase.
 3. Confirmación/recuperación envían desde **Supabase Auth**, con su SMTP Resend; los correos de eventos los envía **Spring**. Revisar ambos en una prueba controlada con tu propia cuenta.
-4. Para foto, el backend necesita las credenciales R2 del bucket privado. La web recorta a 512×512 y sube por Spring; no necesita CORS PUT en R2. Sin R2, el resto del perfil funciona.
+4. Para foto, el backend necesita las credenciales R2 del bucket privado. La web recorta a 512×512, pide un ticket a Spring, sube con PUT prefirmado a R2 y confirma en Spring; necesita la política CORS del bucket. Sin R2, el resto del perfil funciona.
 
 [Pasos de cuentas del backend](../../backend/whoami-backend/docs/SETUP_REAL.md). No colocar claves Resend/R2, contraseña de DB, clave AES ni service_role en variables `VITE_*`.
 
@@ -49,7 +49,7 @@ Si cambia la ubicación de Spring, copiar `.env.example` como `.env.local` y aju
 - Sorteo manual único con mínimo matemático dos; automático **lo ejecuta el backend**, el cliente consulta cada 30 s mientras está visible. El frontend no ejecuta POST automáticamente ni repite mutaciones por errores de red.
 - Revelación personal bajo acción explícita, ocultación local y al ocultar pestaña; eliminación del resultado de memoria al ocultar/salir. No existe vista de todas las parejas.
 - Correos: contadores PENDING/SENDING/SENT/FAILED/CANCELLED y reintento de fallos del organizador; SENT se presenta como «Aceptados para envío».
-- Perfil básico, correo de solo lectura, celular privado, recorte 512×512 y subida multipart de avatar opcional y manejo de 503.
+- Perfil básico, correo de solo lectura, celular privado, recorte 512×512 y subida directa prefirmada de avatar opcional y manejo de 503.
 
 ## Estructura y límites
 
@@ -80,7 +80,7 @@ npm run build
 npm run format:check
 ```
 
-**51 pruebas de frontend aprobadas**: lógica de fechas/zonas/céntimos, destinos internos, Auth simulado, contratos de llamadas HTTP, expiración/renovación, registro sin sesión, recuperación, confirmaciones, permisos, resultado privado, limpiar caché, QR/Blob, recorte y multipart de foto, baja/limpieza de sesión, fallos de foto y correos. Vitest + Testing Library usa respuestas locales y SDK simulado; no envía correos, cambia contraseñas reales ni modifica Supabase.
+**54 pruebas de frontend aprobadas**: lógica de fechas/zonas/céntimos, destinos internos, Auth simulado, contratos de llamadas HTTP, expiración/renovación, registro sin sesión, recuperación, confirmaciones, permisos, resultado privado, limpiar caché, QR/Blob, recorte y PUT prefirmado de foto, baja/limpieza de sesión, fallos de foto y correos. Vitest + Testing Library usa respuestas locales y SDK simulado; no envía correos, cambia contraseñas reales ni modifica Supabase.
 
 También se verificaron el proxy real frontend→Spring, readiness UP, rechazo HTTP 401 sin JWT, el contrato OpenAPI y los proveedores públicos de Auth. La revisión del navegador cubre landing y login a 320/390/768/1440px, sin desborde horizontal; no certifica toda la accesibilidad o todas las pantallas privadas. Se corrigió una carrera de navegación que podía perder el retorno a una invitación al entrar. Pendiente una aceptación con tus cuentas reales: registro/confirmación, Google, recuperación, dos usuarios en el intercambio, entrega de correo y subida de foto. No se creó una cuenta ni evento remoto para probar el frontend.
 
@@ -130,3 +130,19 @@ python3 scripts/deploy_azure.py --api-url https://whoami-backend-cuh6cygxcmewb6c
 ```
 
 No se carga `.env` backend ni se contratan recursos. El script obtiene el token SWA sin mostrarlo. Git push no publica automáticamente. [Guía de Azure](../../backend/whoami-backend/docs/AZURE.md). Las capturas anteriores corresponden al primer despliegue y no prueban aceptación funcional del alojamiento nuevo.
+
+## Avatar: URL prefirmada y CORS
+
+Configurar el bucket privado en Cloudflare → Settings → CORS Policy con [esta política](../../backend/whoami-backend/infra/cloudflare/r2-cors.json). Permite https://whoami.thiagovergaravega.com y http://localhost:3000, PUT/GET/HEAD y Content-Type. No activar acceso público.
+
+El File recortado se sube a R2 con Content-Type firmado, sin JWT ni cookies. El backend autoriza ticket de 5 minutos y confirma propiedad, tamaño y decodificación a 512 × 512 antes de guardar el avatar. Solo ticket/PUT/confirmación usan 60 s; el resto de la API, 20 s. Nunca confirmar si falla el PUT ni reintentar automáticamente. El multipart anterior permanece solo como alternativa de API.
+
+## Participantes, reingreso y cancelación tras sorteo
+
+La lista protegida de participantes incluye `avatarUrl` temporal de R2, sin clave del objeto ni contactos. Si no hay foto/configuración R2, se muestran iniciales. `GET /api/v1/invitations/{token}/access` requiere JWT y devuelve únicamente acceso/membresía del usuario actual (`NONE/ACTIVE/LEFT/REMOVED`, `canView/canJoin`); el resumen público no cambia. OpenAPI tiene 30 operaciones.
+
+La invitación comprueba acceso antes de habilitar unirse: miembros y organizadores abren su evento con mensaje explícito. Tras una unión correcta se actualiza caché por usuario, se limpia el retorno pendiente y se navega al evento. Ante respuesta perdida se consulta pertenencia antes de otro intento; no hay POST automático. Lectura de sesión limitada a 15 s y unión a 60 s. El detalle solo busca al organizador en páginas adicionales si no figura en las primeras 50, evitando esperar una consulta desactivada.
+
+El usuario autorizó cancelar también después del sorteo: OPEN/DRAWN → CANCELLED, estado final e idempotente. Se conservan drawn_at, población y parejas; el resultado propio sigue disponible como historial. No se permite reabrir, sortear de nuevo, unirse ni modificar la población congelada. Pendientes/fallidos se cancelan; un correo en tránsito puede llegar. La migración `drawn_event_cancellation` actualiza constraint/trigger sin borrar datos ni modificar permisos.
+
+Verificación local: 53 pruebas backend con PostgreSQL temporal/permisos y 61 frontend; incluye pertenencia, registro-confirmación-unión, respuesta perdida, fotos, cancelación histórica y guardas SQL. Sin correos/cuentas/eventos reales de prueba.
