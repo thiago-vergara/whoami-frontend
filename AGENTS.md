@@ -1,6 +1,6 @@
 # Frontend Whoami
 
-Leer `../design.md`, `README.md`, `../WHOAMI_CONTEXT.md` y el contrato de Spring. React/TypeScript/Vite, React Router, TanStack Query, Supabase JS solo Auth. Los HTML de `../design/` son referencias; la app funcional está en `src/`.
+Leer `../../design.md`, `README.md`, `../../WHOAMI_CONTEXT.md` y el contrato de Spring. React/TypeScript/Vite, React Router, TanStack Query, Supabase JS solo Auth. Los HTML de `../../design/` son referencias; la app funcional está en `src/`.
 
 Ejecutar `npm test`, `npm run build` y `npm run format:check`. Pruebas con SDK/HTTP simulado, sin correos ni cuentas/eventos remotos. No usar las credenciales reales para pruebas de escritura. Para arrancar Spring en verificaciones forzar `JOBS_ENABLED=false MIGRATIONS_ENABLED=false`; el `.env` del usuario puede tener jobs activos y contiene Resend/R2. Nunca copiar secretos a VITE_*.
 

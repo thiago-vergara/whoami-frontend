@@ -5,3 +5,7 @@ coverage/
 .env.*
 !.env.example
 *.local
+.swa/
+.azure/
+.DS_Store
+*.log

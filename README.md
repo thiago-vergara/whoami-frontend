@@ -1,6 +1,6 @@
 # Whoami — frontend de Amigo Secreto
 
-React 19 + TypeScript + Vite, basado en [design.md](../design.md) y los [mockups de Stitch](../design/README.md). Interfaz en español, Geist servida desde la aplicación, Zinc/verde, SVG locales y adaptación a móvil. Datos y operaciones reales a través del backend Spring; Supabase se usa solo para Auth desde el navegador.
+React 19 + TypeScript + Vite, basado en [design.md](../../design.md) y los [mockups de Stitch](../../design/README.md). Interfaz en español, Geist servida desde la aplicación, Zinc/verde, SVG locales y adaptación a móvil. Datos y operaciones reales a través del backend Spring; Supabase se usa solo para Auth desde el navegador.
 
 ## Ejecutar
 
@@ -13,7 +13,7 @@ Terminal 1, desde `backend/whoami-backend/`:
 JOBS_ENABLED=false MIGRATIONS_ENABLED=false python3 scripts/local.py run
 ```
 
-Terminal 2, desde `frontend/`:
+Terminal 2, desde `frontend/whoami-frontend/`:
 
 ```sh
 npm ci
@@ -35,7 +35,7 @@ El 23/10/2026 se comprobó que Supabase tiene **email y Google habilitados**, co
 3. Confirmación/recuperación envían desde **Supabase Auth**, con su SMTP Resend; los correos de eventos los envía **Spring**. Revisar ambos en una prueba controlada con tu propia cuenta.
 4. Para foto, el backend necesita las credenciales R2 del bucket privado. La web recorta a 512×512 y sube por Spring; no necesita CORS PUT en R2. Sin R2, el resto del perfil funciona.
 
-[Pasos de cuentas del backend](../backend/whoami-backend/docs/SETUP_REAL.md). No colocar claves Resend/R2, contraseña de DB, clave AES ni service_role en variables `VITE_*`.
+[Pasos de cuentas del backend](../../backend/whoami-backend/docs/SETUP_REAL.md). No colocar claves Resend/R2, contraseña de DB, clave AES ni service_role en variables `VITE_*`.
 
 Si cambia la ubicación de Spring, copiar `.env.example` como `.env.local` y ajustar `BACKEND_PROXY_TARGET` (solo servidor Vite). Para una API en otro origen, `VITE_API_BASE_URL` es el origen sin `/api/v1`, por ejemplo `https://api.tu-dominio.com`; configurar CORS exacto en Spring. Las variables `VITE_*` son públicas y se fijan al construir. No necesitas configurar las variables Supabase opcionales si Spring ya devuelve `/api/v1/auth/config`.
 
@@ -106,12 +106,12 @@ En Perfil → Eliminar mi cuenta se explica el efecto y se exige escribir ELIMIN
 
 La bienvenida se encola una vez al primer acceso autenticado; Resend usa la cola/reintentos del backend. Con confirmación activa, se envía después de confirmar y entrar. No es el correo de confirmación de Auth.
 
-Los datos de negocio están en PostgreSQL Supabase, esquema privado `whoami`; usuarios/sesiones en Supabase Auth y fotos en Cloudflare R2. La sesión del SDK permanece en el navegador, sin persistir eventos ni resultados. [Modelo](../backend/whoami-backend/docs/DATA_MODEL.md).
+Los datos de negocio están en PostgreSQL Supabase, esquema privado `whoami`; usuarios/sesiones en Supabase Auth y fotos en Cloudflare R2. La sesión del SDK permanece en el navegador, sin persistir eventos ni resultados. [Modelo](../../backend/whoami-backend/docs/DATA_MODEL.md).
 
 ## Invitaciones por correo, zona horaria y footer
 
 En un evento abierto del organizador, pestaña Invitar → Mandar correo de invitación. El diálogo solicita una dirección, valida y programa envío con Resend. El destinatario puede registrarse después; no se inscribe automáticamente. Hasta 20/hora y 5 min entre envíos a la misma dirección/evento. Error conserva formulario y permite reintento con el mismo requestId; éxito indica programado, sin prometer entrega. Los contadores están en Correos.
 
-Nuevos correos de negocio HTML con la identidad visual de Whoami y texto alternativo. Los dos de Auth requieren [pegar plantillas en Supabase](../backend/whoami-backend/supabase/templates/README.md). Zona horaria con menú anclado al campo, accesible por teclado y valores IANA; sin popup nativo. Footer con propiedad de Thiago Vergara, derechos reservados y enlace a su web.
+Nuevos correos de negocio HTML con la identidad visual de Whoami y texto alternativo. Los dos de Auth requieren [pegar plantillas en Supabase](../../backend/whoami-backend/supabase/templates/README.md). Zona horaria con menú anclado al campo, accesible por teclado y valores IANA; sin popup nativo. Footer con propiedad de Thiago Vergara, derechos reservados y enlace a su web.
 
 PUBLIC_BASE_URL del backend debe ser accesible para invitados. localhost solo funciona en el mismo equipo; para LAN/IP ajustar también Vite host, CORS y redirects Auth. No poner secretos en el front.
