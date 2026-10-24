@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--api-url', required=True, help='Origen HTTPS del backend Container Apps, sin /api/v1.')
+    parser.add_argument('--api-url', required=True, help='Origen HTTPS del backend App Service, sin /api/v1.')
     parser.add_argument('--resource-group', default='rg-whoami-prod')
     parser.add_argument('--app-name', default='whoami-frontend')
     parser.add_argument('--subscription', default='653071f3-a6e1-447a-8961-3c972e025a41')

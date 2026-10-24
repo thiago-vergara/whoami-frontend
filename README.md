@@ -28,7 +28,7 @@ Para uso real con correo/sorteo automático, detener el backend iniciado para co
 
 El 23/10/2026 se comprobó que Supabase tiene **email y Google habilitados**, confirmación por correo activa, y que el `.env` del backend contiene configuración Resend y R2. Presencia de variables no prueba entrega de correo ni subida de imágenes.
 
-1. En **Supabase → Authentication → URL Configuration**, revisar Site URL `http://localhost:3000` y permitir exactamente estos dos destinos:
+1. En **Supabase → Authentication → URL Configuration**, usar Site URL `https://whoami.thiagovergaravega.com` en producción y conservar para desarrollo estos dos destinos:
    - `http://localhost:3000/auth/callback`
    - `http://localhost:3000/auth/callback?intent=recovery`
 2. En Google, mantener como callback `https://hgmklixxdmgyhlriqsiq.supabase.co/auth/v1/callback`. Si el consentimiento sigue en modo de prueba, añadir las cuentas de prueba que usarás. El Client Secret permanece en Supabase.
@@ -70,7 +70,7 @@ Todas las operaciones de negocio usan `/api/v1`. No hay consultas directas a tab
 
 No hay persistencia de eventos, deseos o asignaciones en localStorage, service worker ni modo demo en producción. Solo el SDK conserva su sesión; se guarda un retorno interno con vencimiento y un indicador de recuperación temporal ligado al usuario. Caché de consultas en memoria, separada por UUID y limpia al salir/cambiar de cuenta. Una respuesta que termina después de un cambio de sesión se descarta. El primer 401 puede renovar la sesión una vez; un 401 final limpia la sesión y ofrece volver a entrar. Los 404 no distinguen recursos ajenos; los 409 refrescan el evento y conservan campos del formulario. Enlaces de referencia HTTPS abren con noreferrer; nunca se inyecta HTML de usuarios.
 
-Sin rifas, pagos, identidad ampliada ni nuevas tablas/endpoints. La API de Resend solo se llama desde Java. No se desplegó en Azure.
+Sin rifas, pagos, identidad ampliada ni nuevas tablas/endpoints. La API de Resend solo se llama desde Java. Ya publicado en Azure; ver sección de producción al final.
 
 ## Verificación
 
@@ -96,7 +96,7 @@ docker run --rm -p 3000:8080 \
   -e API_UPSTREAM=http://host.docker.internal:8080 whoami-frontend
 ```
 
-`host.docker.internal` es para Docker Desktop. En Azure usar la URL interna/HTTPS real de Spring, mantener el mismo origen público y actualizar Site URL/redirects/QR/CORS a HTTPS. Terminar TLS en el ingreso de Azure. La imagen y la configuración Nginx quedan preparadas; no se construyeron en este equipo, que no tiene Docker disponible. En el despliegue fijar versiones/digests de imágenes y verificar salud, rutas profundas y conectividad.
+`host.docker.internal` es para Docker Desktop. La alternativa Docker admite API_UPSTREAM; el frontend Azure usa Static Web Apps y requerirá API HTTPS en otro origen, con VITE_API_BASE_URL y CORS exacto. Terminar TLS en el ingreso de Azure. La imagen y la configuración Nginx quedan preparadas; el Dockerfile de frontend no se usa en Azure. El backend anterior se construyó en ACR y fue retirado por costo. En el despliegue fijar versiones/digests de imágenes y verificar salud, rutas profundas y conectividad.
 
 Referencias: [PKCE](https://supabase.com/docs/guides/auth/sessions/pkce-flow), [Google Auth](https://supabase.com/docs/guides/auth/social-login/auth-google), [recuperación](https://supabase.com/docs/reference/javascript/auth-resetpasswordforemail), [variables Vite](https://vite.dev/guide/env-and-mode).
 
@@ -115,3 +115,18 @@ En un evento abierto del organizador, pestaña Invitar → Mandar correo de invi
 Nuevos correos de negocio HTML con la identidad visual de Whoami y texto alternativo. Los dos de Auth requieren [pegar plantillas en Supabase](../../backend/whoami-backend/supabase/templates/README.md). Zona horaria con menú anclado al campo, accesible por teclado y valores IANA; sin popup nativo. Footer con propiedad de Thiago Vergara, derechos reservados y enlace a su web.
 
 PUBLIC_BASE_URL del backend debe ser accesible para invitados. localhost solo funciona en el mismo equipo; para LAN/IP ajustar también Vite host, CORS y redirects Auth. No poner secretos en el front.
+
+## Azure — dominio personalizado y App Service
+
+Web: https://whoami.thiagovergaravega.com. API: https://whoami-backend-cuh6cygxcmewb6cu.westus2-01.azurewebsites.net.
+
+Frontend en la Static Web App Free existente y backend JAR Java 21 en el App Service creado por el usuario, sin Docker. VITE_API_BASE_URL es el origen API de arriba; PUBLIC_BASE_URL/CORS_ORIGINS del backend apuntan al dominio personalizado. Usar ese dominio para login y PKCE. El usuario confirmó Site URL/callbacks Supabase y la secret key nueva permanece solo en backend.
+
+Para publicar desde esta carpeta:
+
+```sh
+npm test
+python3 scripts/deploy_azure.py --api-url https://whoami-backend-cuh6cygxcmewb6cu.westus2-01.azurewebsites.net
+```
+
+No se carga `.env` backend ni se contratan recursos. El script obtiene el token SWA sin mostrarlo. Git push no publica automáticamente. [Guía de Azure](../../backend/whoami-backend/docs/AZURE.md). Las capturas anteriores corresponden al primer despliegue y no prueban aceptación funcional del alojamiento nuevo.
